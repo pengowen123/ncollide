@@ -3,13 +3,13 @@ use world::CollisionObject;
 use math::Point;
 
 /// A signal handler for proximity detection.
-pub trait ProximityHandler<P: Point, M, T> {
+pub trait ProximityHandler<P: Point, M, T>: Send + Sync {
     /// Activate an action for when two objects start or stop to be close to each other.
     fn handle_proximity(&mut self,
                         co1: &CollisionObject<P, M, T>,
                         co2: &CollisionObject<P, M, T>,
                         prev_status: Proximity,
-                        new_status:  Proximity);
+                        new_status: Proximity);
 }
 
 /// Signal for proximity start/stop.
@@ -20,14 +20,12 @@ pub struct ProximitySignal<P: Point, M, T> {
 impl<P: Point, M, T> ProximitySignal<P, M, T> {
     /// Creates a new `ProximitySignal` with no event handler registered.
     pub fn new() -> ProximitySignal<P, M, T> {
-        ProximitySignal {
-            proximity_handlers: Vec::new(),
-        }
+        ProximitySignal { proximity_handlers: Vec::new() }
     }
 
     /// Registers an event handler.
     pub fn register_proximity_handler(&mut self,
-                                      name:     &str,
+                                      name: &str,
                                       callback: Box<ProximityHandler<P, M, T> + 'static>) {
         for &mut (ref mut n, ref mut f) in self.proximity_handlers.iter_mut() {
             if name == &n[..] {

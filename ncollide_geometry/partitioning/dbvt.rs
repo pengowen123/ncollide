@@ -1,7 +1,6 @@
 //! A Dynamic Bounding Volume Tree.
 
-use std::cell::RefCell;
-use std::rc::Rc;
+use std::sync::{Arc, RwLock};
 use std::ptr;
 use std::mem;
 use utils::data::owned_allocation_cache::OwnedAllocationCache;
@@ -14,7 +13,7 @@ use math::Point;
 #[derive(RustcEncodable, RustcDecodable)]
 enum UpdateState {
     NeedsShrink,
-    UpToDate
+    UpToDate,
 }
 
 type Cache<P, B, BV> = OwnedAllocationCache<DBVTInternal<P, B, BV>>;
@@ -22,8 +21,8 @@ type Cache<P, B, BV> = OwnedAllocationCache<DBVTInternal<P, B, BV>>;
 /// A Dynamic Bounding Volume Tree.
 pub struct DBVT<P, B, BV> {
     cache: Cache<P, B, BV>,
-    tree:  Option<DBVTNode<P, B, BV>>,
-    len:   usize
+    tree: Option<DBVTNode<P, B, BV>>,
+    len: usize,
 }
 
 impl<P, B, BV> DBVT<P, B, BV> {
@@ -31,30 +30,31 @@ impl<P, B, BV> DBVT<P, B, BV> {
     pub fn new() -> DBVT<P, B, BV> {
         DBVT {
             cache: OwnedAllocationCache::new(),
-            tree:  None,
-            len:   0
+            tree: None,
+            len: 0,
         }
     }
 }
 
 impl<P, B, BV> DBVT<P, B, BV>
-    where P:  Point,
+    where P: Point,
           BV: 'static + BoundingVolume<P> + Clone,
-          B:  'static + Clone {
+          B: 'static + Clone
+{
     /// Removes a leaf from the tree. Fails if the tree is empty.
-    pub fn remove(&mut self, leaf: &mut Rc<RefCell<DBVTLeaf<P, B, BV>>>) {
+    pub fn remove(&mut self, leaf: &mut Arc<RwLock<DBVTLeaf<P, B, BV>>>) {
         let self_tree = self.tree.take().expect("This tree was empty.");
 
-        let mut bleaf = (*leaf).borrow_mut();
+        let mut bleaf = (*leaf).write().unwrap();
         self.tree = bleaf.unlink(&mut self.cache, self_tree);
-        self.len  = self.len - 1;
+        self.len = self.len - 1;
     }
 
     // FIXME: it feels strange that this method takes (B, BV) in this order while the leaves
     // constructor takes (BV, B)…
     /// Creates, inserts, and returns a new leaf with the given content.
-    pub fn insert_new(&mut self, b: B, bv: BV) -> Rc<RefCell<DBVTLeaf<P, B, BV>>> {
-        let leaf = Rc::new(RefCell::new(DBVTLeaf::new(bv, b)));
+    pub fn insert_new(&mut self, b: B, bv: BV) -> Arc<RwLock<DBVTLeaf<P, B, BV>>> {
+        let leaf = Arc::new(RwLock::new(DBVTLeaf::new(bv, b)));
 
         self.insert(leaf.clone());
 
@@ -62,16 +62,16 @@ impl<P, B, BV> DBVT<P, B, BV>
     }
 
     /// Inserts a leaf to the tree.
-    pub fn insert(&mut self, leaf: Rc<RefCell<DBVTLeaf<P, B, BV>>>) {
+    pub fn insert(&mut self, leaf: Arc<RwLock<DBVTLeaf<P, B, BV>>>) {
         let mut self_tree = None;
         mem::swap(&mut self_tree, &mut self.tree);
 
         self.tree = match self_tree {
-            None    => {
-                leaf.borrow_mut().parent = DBVTLeafState::Root;
+            None => {
+                leaf.write().unwrap().parent = DBVTLeafState::Root;
                 Some(DBVTNode::Leaf(leaf))
-            },
-            Some(t) => Some(DBVTNode::Internal(t.insert(&mut self.cache, leaf)))
+            }
+            Some(t) => Some(DBVTNode::Internal(t.insert(&mut self.cache, leaf))),
         };
 
         self.len = self.len + 1;
@@ -84,7 +84,7 @@ impl<P, B, BV> DBVT<P, B, BV>
     pub fn visit<Vis: BVTVisitor<B, BV>>(&self, visitor: &mut Vis) {
         match self.tree {
             Some(ref t) => t.visit(visitor),
-            None        => { }
+            None => {}
         }
     }
 }
@@ -92,8 +92,8 @@ impl<P, B, BV> DBVT<P, B, BV>
 /// Node of the Dynamic Bounding Volume Tree.
 enum DBVTNode<P, B, BV> {
     Internal(Box<DBVTInternal<P, B, BV>>),
-    Leaf(Rc<RefCell<DBVTLeaf<P, B, BV>>>),
-    Invalid
+    Leaf(Arc<RwLock<DBVTLeaf<P, B, BV>>>),
+    Invalid,
 }
 
 /// Internal node of a DBVT. An internal node always has two children.
@@ -101,31 +101,34 @@ struct DBVTInternal<P, B, BV> {
     /// The bounding volume of this node. It always encloses both its children bounding volumes.
     bounding_volume: BV,
     /// The center of this node bounding volume.
-    center:          P,
+    center: P,
     /// This node left child.
-    left:            DBVTNode<P, B, BV>,
+    left: DBVTNode<P, B, BV>,
     /// This node right child.
-    right:           DBVTNode<P, B, BV>,
+    right: DBVTNode<P, B, BV>,
     /// This node parent.
-    parent:          *mut DBVTInternal<P, B, BV>,
+    parent: *mut DBVTInternal<P, B, BV>,
 
-    state:           UpdateState
+    state: UpdateState,
 }
+
+unsafe impl<P, B, BV> Send for DBVTInternal<P, B, BV> {}
+unsafe impl<P, B, BV> Sync for DBVTInternal<P, B, BV> {}
 
 impl<P: Point, BV: BoundingVolume<P>, B> DBVTInternal<P, B, BV> {
     /// Creates a new internal node.
     fn new(bounding_volume: BV,
-           parent:          *mut DBVTInternal<P, B, BV>,
-           left:            DBVTNode<P, B, BV>,
-           right:           DBVTNode<P, B, BV>)
+           parent: *mut DBVTInternal<P, B, BV>,
+           left: DBVTNode<P, B, BV>,
+           right: DBVTNode<P, B, BV>)
            -> DBVTInternal<P, B, BV> {
         DBVTInternal {
-            center:          bounding_volume.center(),
+            center: bounding_volume.center(),
             bounding_volume: bounding_volume,
-            left:            left,
-            right:           right,
-            parent:          parent,
-            state:           UpdateState::UpToDate
+            left: left,
+            right: right,
+            parent: parent,
+            state: UpdateState::UpToDate,
         }
     }
 }
@@ -140,7 +143,7 @@ enum DBVTLeafState<P, B, BV> {
     /// This leaf is the left child of another node.
     LeftChildOf(*mut DBVTInternal<P, B, BV>),
     /// This leaf is detached from any tree.
-    Detached
+    Detached,
 }
 
 impl<P, B, BV> DBVTLeafState<P, B, BV> {
@@ -149,7 +152,7 @@ impl<P, B, BV> DBVTLeafState<P, B, BV> {
     pub fn is_root(&self) -> bool {
         match *self {
             DBVTLeafState::Root => true,
-            _ => false
+            _ => false,
         }
     }
 
@@ -158,7 +161,7 @@ impl<P, B, BV> DBVTLeafState<P, B, BV> {
     pub fn is_detached(&self) -> bool {
         match *self {
             DBVTLeafState::Detached => true,
-            _ => false
+            _ => false,
         }
     }
 
@@ -167,8 +170,8 @@ impl<P, B, BV> DBVTLeafState<P, B, BV> {
     fn unwrap(self) -> (bool, *mut DBVTInternal<P, B, BV>) {
         match self {
             DBVTLeafState::RightChildOf(p) => (false, p),
-            DBVTLeafState::LeftChildOf(p)  => (true, p),
-            _ => panic!("Attempting to unwrap a root or detached node.")
+            DBVTLeafState::LeftChildOf(p) => (true, p),
+            _ => panic!("Attempting to unwrap a root or detached node."),
         }
     }
 }
@@ -179,18 +182,18 @@ pub struct DBVTLeaf<P, B, BV> {
     /// The bounding volume of this node.
     pub bounding_volume: BV,
     /// The center of this node bounding volume.
-    pub center:          P,
+    pub center: P,
     /// An user-defined object.
-    pub object:          B,
+    pub object: B,
     /// This node parent.
-    parent:              DBVTLeafState<P, B, BV>
+    parent: DBVTLeafState<P, B, BV>,
 }
 
 impl<P, B, BV> DBVTNode<P, B, BV> {
     fn take_internal(self) -> Box<DBVTInternal<P, B, BV>> {
         match self {
             DBVTNode::Internal(i) => i,
-            _ => panic!("DBVT internal error: this is not an internal node.")
+            _ => panic!("DBVT internal error: this is not an internal node."),
         }
     }
 
@@ -204,11 +207,12 @@ impl<P, B, BV> DBVTNode<P, B, BV> {
 }
 
 impl<P, B, BV> DBVTInternal<P, B, BV> {
-    fn is_right_internal_node(&self, r: &mut DBVTInternal<P, B, BV>) -> bool
-    {
+    fn is_right_internal_node(&self, r: &mut DBVTInternal<P, B, BV>) -> bool {
         match self.right {
-            DBVTNode::Internal(ref i) => &**i as *const DBVTInternal<P, B, BV> == &*r as *const DBVTInternal<P, B, BV>,
-            _ => false
+            DBVTNode::Internal(ref i) => {
+                &**i as *const DBVTInternal<P, B, BV> == &*r as *const DBVTInternal<P, B, BV>
+            }
+            _ => false,
         }
     }
 }
@@ -217,10 +221,10 @@ impl<P: Point, B: 'static, BV: BoundingVolume<P> + 'static> DBVTLeaf<P, B, BV> {
     /// Creates a new leaf.
     pub fn new(bounding_volume: BV, object: B) -> DBVTLeaf<P, B, BV> {
         DBVTLeaf {
-            center:          bounding_volume.center(),
+            center: bounding_volume.center(),
             bounding_volume: bounding_volume,
-            object:          object,
-            parent:          DBVTLeafState::Detached
+            object: object,
+            parent: DBVTLeafState::Detached,
         }
     }
 
@@ -241,13 +245,14 @@ impl<P: Point, B: 'static, BV: BoundingVolume<P> + 'static> DBVTLeaf<P, B, BV> {
     /// # Arguments:
     /// * `curr_root`: current root of the tree.
     fn unlink(&mut self,
-              cache:     &mut Cache<P, B, BV>,
-              curr_root: DBVTNode<P, B, BV>) -> Option<DBVTNode<P, B, BV>> {
+              cache: &mut Cache<P, B, BV>,
+              curr_root: DBVTNode<P, B, BV>)
+              -> Option<DBVTNode<P, B, BV>> {
         if !self.is_root() {
             let (is_left, p) = mem::replace(&mut self.parent, DBVTLeafState::Detached).unwrap();
 
-            let pp           = unsafe { (*p).parent };
-            let parent_left  = unsafe { (*p).left.invalidate() };
+            let pp = unsafe { (*p).parent };
+            let parent_left = unsafe { (*p).left.invalidate() };
             let parent_right = unsafe { (*p).right.invalidate() };
 
             let mut other = if is_left { parent_right } else { parent_left };
@@ -258,20 +263,21 @@ impl<P: Point, B: 'static, BV: BoundingVolume<P> + 'static> DBVTLeaf<P, B, BV> {
                 unsafe {
                     match other {
                         DBVTNode::Internal(ref mut i) => i.parent = pp,
-                        DBVTNode::Leaf(ref mut l)     => {
-                            (**l).borrow_mut().parent =
-                                if is_p_right_to_pp { DBVTLeafState::RightChildOf(pp) }
-                                else { DBVTLeafState::LeftChildOf(pp) }
-                        },
-                        DBVTNode::Invalid => unreachable!()
+                        DBVTNode::Leaf(ref mut l) => {
+                            (**l).write().unwrap().parent = if is_p_right_to_pp {
+                                DBVTLeafState::RightChildOf(pp)
+                            } else {
+                                DBVTLeafState::LeftChildOf(pp)
+                            }
+                        }
+                        DBVTNode::Invalid => unreachable!(),
                     }
 
                     if is_p_right_to_pp {
                         mem::swap(&mut (*pp).right, &mut other);
                         // NOTE: the children have already been invalidated before
                         cache.retain(other.take_internal())
-                    }
-                    else {
+                    } else {
                         mem::swap(&mut (*pp).left, &mut other);
                         // NOTE: the children have already been invalidated before
                         cache.retain(other.take_internal())
@@ -281,19 +287,17 @@ impl<P: Point, B: 'static, BV: BoundingVolume<P> + 'static> DBVTLeaf<P, B, BV> {
                 }
 
                 Some(curr_root)
-            }
-            else {
+            } else {
                 // the root changes to the other child
                 match other {
                     DBVTNode::Internal(ref mut i) => i.parent = ptr::null_mut(),
-                    DBVTNode::Leaf(ref l)         => (**l).borrow_mut().parent = DBVTLeafState::Root,
-                    DBVTNode::Invalid             => unreachable!()
+                    DBVTNode::Leaf(ref l) => (**l).write().unwrap().parent = DBVTLeafState::Root,
+                    DBVTNode::Invalid => unreachable!(),
                 }
 
                 Some(other)
             }
-        }
-        else {
+        } else {
             self.parent = DBVTLeafState::Detached;
 
             // the tree becomes empty
@@ -303,43 +307,47 @@ impl<P: Point, B: 'static, BV: BoundingVolume<P> + 'static> DBVTLeaf<P, B, BV> {
 }
 
 impl<P, BV, B> DBVTNode<P, B, BV>
-    where P:  Point,
+    where P: Point,
           BV: 'static + BoundingVolume<P>,
-          B: 'static {
+          B: 'static
+{
     fn sqdist_to(&self, to: &P) -> P::Real {
         match *self {
             DBVTNode::Internal(ref i) => na::distance_squared(&i.center, to),
-            DBVTNode::Leaf(ref l)     => {
-                let bl = l.borrow();
+            DBVTNode::Leaf(ref l) => {
+                let bl = l.read().unwrap();
                 na::distance_squared(&bl.center, to)
-            },
-            DBVTNode::Invalid => unreachable!()
+            }
+            DBVTNode::Invalid => unreachable!(),
         }
     }
 }
 
 impl<P, B, BV> DBVTInternal<P, B, BV>
-    where P:  Point,
+    where P: Point,
           BV: 'static + BoundingVolume<P>,
-          B:  'static {
+          B: 'static
+{
     fn is_closest_to_left(&self, pt: &P) -> bool {
         self.right.sqdist_to(pt) > self.left.sqdist_to(pt)
     }
 }
 
 impl<P, BV, B> DBVTNode<P, B, BV>
-    where P:  Point,
+    where P: Point,
           BV: 'static + BoundingVolume<P>,
-          B:  'static {
+          B: 'static
+{
     /// Inserts a new leaf on this tree.
     fn insert(self,
-              cache:     &mut Cache<P, B, BV>,
-              to_insert: Rc<RefCell<DBVTLeaf<P, B, BV>>>)
+              cache: &mut Cache<P, B, BV>,
+              to_insert: Arc<RwLock<DBVTLeaf<P, B, BV>>>)
               -> Box<DBVTInternal<P, B, BV>> {
-        assert!(to_insert.borrow().is_detached(), "Cannot insert the same node twice.");
+        assert!(to_insert.read().unwrap().is_detached(),
+                "Cannot insert the same node twice.");
 
-        let mut bto_insert = (*to_insert).borrow_mut();
-        let pto_insert     = &mut *bto_insert;
+        let mut bto_insert = (*to_insert).write().unwrap();
+        let pto_insert = &mut *bto_insert;
 
         match self {
             DBVTNode::Internal(i) => {
@@ -350,7 +358,7 @@ impl<P, BV, B> DBVTNode<P, B, BV>
                  */
 
                 let mut mut_internal = i;
-                let mut parent       = &mut *mut_internal as *mut DBVTInternal<P, B, BV>;
+                let mut parent = &mut *mut_internal as *mut DBVTInternal<P, B, BV>;
 
                 unsafe {
                     (*parent).bounding_volume.merge(&pto_insert.bounding_volume);
@@ -362,8 +370,7 @@ impl<P, BV, B> DBVTNode<P, B, BV>
                     if (*parent).is_closest_to_left(&pto_insert.center) {
                         curr = &mut (*parent).left as *mut DBVTNode<P, B, BV>;
                         left = true;
-                    }
-                    else {
+                    } else {
                         curr = &mut (*parent).right as *mut DBVTNode<P, B, BV>;
                         left = false;
                     }
@@ -374,64 +381,67 @@ impl<P, BV, B> DBVTNode<P, B, BV>
                                 // FIXME: we could avoid the systematic merge
                                 ci.bounding_volume.merge(&pto_insert.bounding_volume);
 
-                                if ci.is_closest_to_left(&pto_insert.center) { // FIXME
+                                if ci.is_closest_to_left(&pto_insert.center) {
+                                    // FIXME
                                     curr = &mut ci.left as *mut DBVTNode<P, B, BV>;
                                     left = true;
-                                }
-                                else {
+                                } else {
                                     curr = &mut ci.right as *mut DBVTNode<P, B, BV>;
                                     left = false;
                                 }
 
                                 parent = &mut **ci as *mut DBVTInternal<P, B, BV>;
-                            },
+                            }
                             DBVTNode::Leaf(ref l) => {
-                                let mut bl       = (**l).borrow_mut();
-                                let     pl       = &mut *bl;
+                                let mut bl = (**l).write().unwrap();
+                                let pl = &mut *bl;
                                 let mut internal = cache.alloc(DBVTInternal::new(
                                     pl.bounding_volume.merged(&pto_insert.bounding_volume),
                                     parent,
                                     DBVTNode::Leaf(l.clone()),
                                     DBVTNode::Leaf(to_insert.clone())));
 
-                                pl.parent = DBVTLeafState::LeftChildOf(&mut *internal as *mut DBVTInternal<P, B, BV>);
+                                pl.parent = DBVTLeafState::LeftChildOf(&mut *internal as
+                                                                       *mut DBVTInternal<P, B, BV>);
                                 pto_insert.parent =
-                                    DBVTLeafState::RightChildOf(&mut *internal as *mut DBVTInternal<P, B, BV>);
+                                    DBVTLeafState::RightChildOf(&mut *internal as
+                                                                *mut DBVTInternal<P, B, BV>);
 
                                 if left {
                                     (*parent).left = DBVTNode::Internal(internal)
-                                }
-                                else {
+                                } else {
                                     (*parent).right = DBVTNode::Internal(internal)
                                 }
 
                                 break;
-                            },
-                            DBVTNode::Invalid => unreachable!()
+                            }
+                            DBVTNode::Invalid => unreachable!(),
                         }
                     }
                 }
 
                 mut_internal
-            },
+            }
             DBVTNode::Leaf(l) => {
-                let     cl = l.clone();
-                let mut bl = (*cl).borrow_mut();
-                let     pl = &mut *bl;
+                let cl = l.clone();
+                let mut bl = (*cl).write().unwrap();
+                let pl = &mut *bl;
 
                 // create the root
-                let mut root = cache.alloc(DBVTInternal::new(
-                    pl.bounding_volume.merged(&pto_insert.bounding_volume),
-                    ptr::null_mut(),
-                    DBVTNode::Leaf(l),
-                    DBVTNode::Leaf(to_insert.clone())));
+                let mut root =
+                    cache.alloc(DBVTInternal::new(pl.bounding_volume
+                                                      .merged(&pto_insert.bounding_volume),
+                                                  ptr::null_mut(),
+                                                  DBVTNode::Leaf(l),
+                                                  DBVTNode::Leaf(to_insert.clone())));
 
                 pl.parent = DBVTLeafState::LeftChildOf(&mut *root as *mut DBVTInternal<P, B, BV>);
-                pto_insert.parent = DBVTLeafState::RightChildOf(&mut *root as *mut DBVTInternal<P, B, BV>);
+                pto_insert.parent = DBVTLeafState::RightChildOf(&mut *root as
+                                                                *mut DBVTInternal<P, B, BV>);
 
                 root
-            },
-            DBVTNode::Invalid => unreachable!()
+            }
+            DBVTNode::Invalid => unreachable!(),
         }
     }
 
@@ -442,12 +452,12 @@ impl<P, BV, B> DBVTNode<P, B, BV>
                     i.left.visit(visitor);
                     i.right.visit(visitor);
                 }
-            },
+            }
             DBVTNode::Leaf(ref l) => {
-                let bl = l.borrow();
+                let bl = l.read().unwrap();
                 visitor.visit_leaf(&bl.object, &bl.bounding_volume)
-            },
-            DBVTNode::Invalid => unreachable!()
+            }
+            DBVTNode::Invalid => unreachable!(),
         }
     }
 }

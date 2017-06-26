@@ -3,15 +3,17 @@ use narrow_phase::ContactAlgorithm;
 use math::Point;
 
 /// A signal handler for contact detection.
-pub trait ContactHandler<P: Point, M, T> {
+pub trait ContactHandler<P: Point, M, T>: Send + Sync {
     /// Activate an action for when two objects start being in contact.
     fn handle_contact_started(&mut self,
-                              co1:      &CollisionObject<P, M, T>,
-                              co2:      &CollisionObject<P, M, T>,
+                              co1: &CollisionObject<P, M, T>,
+                              co2: &CollisionObject<P, M, T>,
                               contacts: &ContactAlgorithm<P, M>);
 
     /// Activate an action for when two objects stop being in contact.
-    fn handle_contact_stopped(&mut self, co1: &CollisionObject<P, M, T>, co2: &CollisionObject<P, M, T>);
+    fn handle_contact_stopped(&mut self,
+                              co1: &CollisionObject<P, M, T>,
+                              co2: &CollisionObject<P, M, T>);
 }
 
 /// Signal for contact start/stop.
@@ -22,14 +24,12 @@ pub struct ContactSignal<P: Point, M, T> {
 impl<P: Point, M, T> ContactSignal<P, M, T> {
     /// Creates a new `ContactSignal` with no event handler registered.
     pub fn new() -> ContactSignal<P, M, T> {
-        ContactSignal {
-            contact_handlers: Vec::new(),
-        }
+        ContactSignal { contact_handlers: Vec::new() }
     }
 
     /// Registers an event handler.
     pub fn register_contact_handler(&mut self,
-                                    name:     &str,
+                                    name: &str,
                                     callback: Box<ContactHandler<P, M, T> + 'static>) {
         for &mut (ref mut n, ref mut f) in self.contact_handlers.iter_mut() {
             if name == &n[..] {
@@ -59,8 +59,8 @@ impl<P: Point, M, T> ContactSignal<P, M, T> {
     // FIXME: do we really want to use &mut here ?
     /// Activates the contact started signal, executing all the event handlers.
     pub fn trigger_contact_started_signal(&mut self,
-                                          co1:      &CollisionObject<P, M, T>,
-                                          co2:      &CollisionObject<P, M, T>,
+                                          co1: &CollisionObject<P, M, T>,
+                                          co2: &CollisionObject<P, M, T>,
                                           contacts: &ContactAlgorithm<P, M>) {
         for &mut (_, ref mut f) in self.contact_handlers.iter_mut() {
             f.handle_contact_started(co1, co2, contacts)

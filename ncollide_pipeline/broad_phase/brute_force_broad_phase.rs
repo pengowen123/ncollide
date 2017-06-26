@@ -9,29 +9,30 @@ use math::Point;
 ///
 /// Use this for debugging purposes only.
 pub struct BruteForceBroadPhase<N, BV, T> {
-    proxies:   UidRemap<(BV, T)>,
-    margin:    N, // The margin added to each bounding volume.
+    proxies: UidRemap<(BV, T)>,
+    margin: N, // The margin added to each bounding volume.
     to_remove: Vec<usize>,
-    to_add:    Vec<(usize, BV, T)>,
-    to_update: Vec<(FastKey, BV)>
+    to_add: Vec<(usize, BV, T)>,
+    to_update: Vec<(FastKey, BV)>,
 }
 
 impl<N, BV, T> BruteForceBroadPhase<N, BV, T> {
     /// Creates a new brute-force broad phase.
     pub fn new(margin: N, small_keys: bool) -> BruteForceBroadPhase<N, BV, T> {
         BruteForceBroadPhase {
-            proxies:   UidRemap::new(small_keys),
-            margin:    margin,
+            proxies: UidRemap::new(small_keys),
+            margin: margin,
             to_remove: Vec::new(),
-            to_add:    Vec::new(),
-            to_update: Vec::new()
+            to_add: Vec::new(),
+            to_update: Vec::new(),
         }
     }
 }
 
-impl<P: Point, BV, T> BroadPhase<P, BV, T> for BruteForceBroadPhase<P::Real, BV, T> where
-    BV: 'static + BoundingVolume<P> +
-        RayCast<P, Id> + PointQuery<P, Id> + Clone {
+impl<P: Point, BV, T> BroadPhase<P, BV, T> for BruteForceBroadPhase<P::Real, BV, T>
+    where BV: 'static + BoundingVolume<P> + RayCast<P, Id> + PointQuery<P, Id> + Clone + Send + Sync,
+          T: Send + Sync
+{
     fn deferred_add(&mut self, uid: usize, bv: BV, data: T) {
         // XXX: should not be inserted now!
         let (key, _) = self.proxies.insert(uid, (bv.clone(), data));
@@ -59,7 +60,9 @@ impl<P: Point, BV, T> BroadPhase<P, BV, T> for BruteForceBroadPhase<P::Real, BV,
         }
     }
 
-    fn update(&mut self, allow_proximity: &mut FnMut(&T, &T) -> bool, proximity_handler: &mut FnMut(&T, &T, bool)) {
+    fn update(&mut self,
+              allow_proximity: &mut FnMut(&T, &T) -> bool,
+              proximity_handler: &mut FnMut(&T, &T, bool)) {
         for (uid, bv, data) in self.to_add.drain(..) {
             let lbv = bv.loosened(self.margin.clone());
             let key = self.proxies.insert(uid, (lbv.clone(), data));
